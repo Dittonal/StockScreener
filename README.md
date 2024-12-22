@@ -13,8 +13,8 @@ Experience the power of AI-driven stock screening: [Try DEMO APP Now](https://ai
 - **Training Metrics Visualization**: Analyze the performance of underlying Deep Learning models with training metrics charts.
 
 ## 🔧 Requirements
-- Python 3.8 or higher
-
+- Python 3.10 or higher
+- tensorflow 2.9
 All the necessary Python packages can be found in the **requirements.txt** file.
 
 ## 💡 Installation & Setup
