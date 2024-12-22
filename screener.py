@@ -120,7 +120,7 @@ class StockScreener:
         if "trained" not in st.session_state:
             st.session_state.trained = False
 
-        st.title(":grey[🚀NASDAQ 100 STOCK SCREENER 📈]")
+        st.title(":grey[纳斯达克 100 股票看板 📈]")
 
         # Create sidebar for filtering options
         sector_list = sorted(list(set(stock.sector for stock in self.stocks)))
