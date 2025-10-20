@@ -9,4 +9,4 @@ yfinance==0.2.12
 tensorflow-gpu==2.9
 keras==2.9.0
 protobuf==3.20.0
-
+streamlit-echarts==0.4.0
