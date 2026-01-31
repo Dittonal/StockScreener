@@ -7,10 +7,7 @@
 #
 import re
 import json
-import math
-import time
 import requests
-import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, date
 from typing import Dict, List, Tuple, Optional
@@ -45,14 +42,13 @@ RANGE_ITEMS = [
 ]
 RANGE_LABELS = {i["key"]: i["label"] for i in RANGE_ITEMS}
 
+# ========== 均线配置：5 / 10 / 20 ==========
 MA_ITEMS = [
     {"key": "ma5",  "label": "MA5",  "win": 5},
-    {"key": "ma7",  "label": "MA7",  "win": 7},
     {"key": "ma10", "label": "MA10", "win": 10},
     {"key": "ma20", "label": "MA20", "win": 20},
 ]
 MA_META = {i["key"]: i for i in MA_ITEMS}
-
 
 # ========== 工具函数 ==========
 def ytd_start() -> date:
@@ -86,11 +82,9 @@ def moving_average(series: List[Tuple[int, float]], win: int) -> List[Tuple[int,
     return out
 
 def calc_extremes(rows: List[Dict]) -> Optional[Dict]:
-    """计算最大涨幅与最大回撤（基于单位净值）"""
     n = len(rows)
     if n < 2:
         return None
-    # 最大涨幅
     min_val = rows[0]["unit"]; min_idx = 0
     max_gain = -1e18; gain_from = 0; gain_to = 0
     for i in range(1, n):
@@ -100,7 +94,6 @@ def calc_extremes(rows: List[Dict]) -> Optional[Dict]:
             max_gain = g; gain_from = min_idx; gain_to = i
         if v < min_val:
             min_val = v; min_idx = i
-    # 最大回撤（最小的 v/max - 1）
     max_val = rows[0]["unit"]; max_idx = 0
     max_drawdown = 1e18; dd_from = 0; dd_to = 0
     for i in range(1, n):
@@ -115,29 +108,23 @@ def calc_extremes(rows: List[Dict]) -> Optional[Dict]:
         downPct=max_drawdown*100, downFrom=dd_from, downTo=dd_to
     )
 
-
 # ========== 数据抓取与解析 ==========
 PINGZHONG_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
-
 PAT_NET = re.compile(r"var\s+Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);")
 PAT_ACC = re.compile(r"var\s+Data_ACWorthTrend\s*=\s*(\[[\s\S]*?\]);")
 
 def fetch_pingzhong(code: str) -> Tuple[List[Dict], List[List]]:
-    """拉取 pingzhongdata/{code}.js，并解析两类数组"""
     url = PINGZHONG_URL.format(code=code)
     resp = requests.get(url, timeout=8)
     resp.raise_for_status()
     text = resp.text
-
     m1 = PAT_NET.search(text)
     m2 = PAT_ACC.search(text)
     if not (m1 and m2):
         raise ValueError("未解析到历史净值数据，请检查基金代码")
-
-    net = json.loads(m1.group(1))     # list of {x: ts, y: unit, equityReturn:..., unitMoney:...}
-    acc = json.loads(m2.group(1))     # list of [ts, acc]
+    net = json.loads(m1.group(1))
+    acc = json.loads(m2.group(1))
     return net, acc
-
 
 # ========== 会话状态 ==========
 if "fund_map" not in st.session_state:
@@ -149,13 +136,11 @@ if "enabled_mas" not in st.session_state:
 if "datazoom" not in st.session_state:
     st.session_state.datazoom = {"start": 0, "end": 100}
 
-
 # ========== 侧栏（控制区）==========
 with st.sidebar:
     st.markdown("### 📈 基金历史净值趋势")
     st.caption("数据源：东方财富 pingzhongdata")
 
-    # 导入基金配置（JSON，形如 { "110022": "易方达消费行业", ... }）
     up = st.file_uploader("导入基金配置（JSON）", type=["json"])
     if up is not None:
         try:
@@ -172,14 +157,33 @@ with st.sidebar:
         except Exception as e:
             st.error(f"读取失败：{e}")
 
-    # 基金选择
+    # ====== 基金选择：支持输入检索 + 下拉选择 ======
     codes_sorted = sorted(st.session_state.fund_map.keys())
-    default_index = max(0, codes_sorted.index("110022")) if "110022" in codes_sorted else 0
-    sel_code = st.selectbox(
-        "基金", options=codes_sorted,
-        format_func=lambda c: f"{c} · {st.session_state.fund_map[c]}",
-        index=default_index
-    )
+    code_label_map = {c: f"{c} · {st.session_state.fund_map[c]}" for c in codes_sorted}
+    label_code_map = {v: k for k, v in code_label_map.items()}
+
+    default_code = "110022" if "110022" in codes_sorted else (codes_sorted[0] if codes_sorted else "")
+    q = st.text_input("输入检索（代码/名称）", value=default_code)
+    q = (q or "").strip()
+
+    if q in st.session_state.fund_map:
+        sel_code = q
+        st.caption(f"已定位：{code_label_map.get(sel_code, sel_code)}")
+    else:
+        q_lower = q.lower()
+        filtered_codes = [
+            c for c in codes_sorted
+            if (q_lower in c.lower()) or (q_lower in st.session_state.fund_map[c].lower())
+        ]
+        if not filtered_codes:
+            filtered_codes = codes_sorted
+
+        options = [code_label_map[c] for c in filtered_codes]
+        default_label = code_label_map.get(default_code, options[0] if options else "")
+        idx = options.index(default_label) if (default_label in options) else 0
+
+        sel_label = st.selectbox("基金（下拉）", options=options, index=idx)
+        sel_code = label_code_map[sel_label]
 
     # 区间
     range_key = st.radio(
@@ -191,7 +195,6 @@ with st.sidebar:
     )
     if range_key != st.session_state.range_key:
         st.session_state.range_key = range_key
-        # 重置 dataZoom 与看板同步
         st.session_state.datazoom = {"start": 0, "end": 100}
 
     # 均线开关（含全选）
@@ -214,14 +217,12 @@ with st.sidebar:
     st.divider()
     st.caption("小贴士：Streamlit 后端抓取数据，不受浏览器 CORS 限制。")
 
-
 # ========== 主体内容 ==========
 left, right = st.columns([7, 3], gap="large")
 
 with left:
     st.markdown(f"### {sel_code} · {st.session_state.fund_map.get(sel_code, '')}")
 
-    # 按钮栏（“今年”快速切换）
     col_a, col_b = st.columns([1, 6])
     with col_a:
         if st.button("今年"):
@@ -229,7 +230,6 @@ with left:
             st.session_state.datazoom = {"start": 0, "end": 100}
             st.rerun()
 
-    # 取数据
     status = st.empty()
     errbox = st.empty()
     try:
@@ -241,7 +241,6 @@ with left:
         errbox.error(str(e))
         st.stop()
 
-    # 预处理
     acc_map = {int(ts): float(v) for ts, v in acc_raw}
     rows_all = []
     for obj in net_raw:
@@ -256,26 +255,22 @@ with left:
             ))
     rows_all.sort(key=lambda r: r["ts"])
 
-    # 累计行数 + 首末日期
     if rows_all:
         meta = f"区间：{rows_all[0]['date']} ~ {rows_all[-1]['date']}（{len(rows_all)} 日）"
     else:
         meta = "所选区间暂无数据"
     st.caption(meta)
 
-    # 计算均线
     net_series = [(r["ts"], r["unit"]) for r in rows_all]
     ma_series_map = {}
     for key in st.session_state.enabled_mas:
         win = MA_META[key]["win"]
         ma_series_map[key] = moving_average(net_series, win)
 
-    # 构造图表数据
     x = [r["date"] for r in rows_all]
     y_unit = [r["unit"] for r in rows_all]
     y_acc = [r["acc"] for r in rows_all]
 
-    # 依据 datazoom 计算看板（如果有数据缩放事件回传，就只统计可见窗口）
     dz = st.session_state.datazoom or {"start": 0, "end": 100}
     if rows_all:
         n = len(rows_all)
@@ -289,7 +284,6 @@ with left:
 
     ex = calc_extremes(rows_visible) if rows_visible else None
 
-    # markArea 构造
     mark_areas = []
     if rows_visible and ex:
         up_start = rows_visible[ex["upFrom"]]["date"]
@@ -307,7 +301,6 @@ with left:
                 {"xAxis": dn_end}
             ])
 
-    # series
     series = [
         {"name": "单位净值", "type": "line", "smooth": True, "showSymbol": False,
          "data": y_unit, "lineStyle": {"width": 2},
@@ -317,7 +310,7 @@ with left:
     ]
     for key, arr in ma_series_map.items():
         m = {int(ts): v for ts, v in arr}
-        y = [ (None if m.get(r["ts"]) is None else round(float(m.get(r["ts"])), 6)) for r in rows_all ]
+        y = [(None if m.get(r["ts"]) is None else round(float(m.get(r["ts"])), 6)) for r in rows_all]
         series.append({
             "name": key.upper(),
             "type": "line",
@@ -330,7 +323,6 @@ with left:
 
     legend_items = ["单位净值", "累计净值"] + [k.upper() for k in st.session_state.enabled_mas]
 
-    # ECharts 选项
     option = {
         "backgroundColor": "#ffffff",
         "grid": {"left": 44, "right": 20, "top": 28, "bottom": 48},
@@ -349,7 +341,6 @@ with left:
         "series": series,
     }
 
-    # 捕获 dataZoom 事件（streamlit-echarts 支持回传）
     events = {
         "datazoom": """
             function(params) {
@@ -364,7 +355,6 @@ with left:
 
     event = st_echarts(options=option, height="480px", events=events, key=f"chart-{sel_code}-{st.session_state.range_key}")
     if isinstance(event, dict) and "start" in event and "end" in event:
-        # 保存缩放区间并重新计算看板
         st.session_state.datazoom = {"start": float(event["start"]), "end": float(event["end"])}
 
 with right:
