@@ -112,8 +112,9 @@ def calc_extremes(rows: List[Dict]) -> Optional[Dict]:
 PINGZHONG_URL = "https://fund.eastmoney.com/pingzhongdata/{code}.js"
 PAT_NET = re.compile(r"var\s+Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);")
 PAT_ACC = re.compile(r"var\s+Data_ACWorthTrend\s*=\s*(\[[\s\S]*?\]);")
+PAT_NAME = re.compile(r'var\s+fS_name\s*=\s*"([^"]*)"\s*;')
 
-def fetch_pingzhong(code: str) -> Tuple[List[Dict], List[List]]:
+def fetch_pingzhong(code: str) -> Tuple[List[Dict], List[List], Optional[str]]:
     url = PINGZHONG_URL.format(code=code)
     resp = requests.get(url, timeout=8)
     resp.raise_for_status()
@@ -124,7 +125,9 @@ def fetch_pingzhong(code: str) -> Tuple[List[Dict], List[List]]:
         raise ValueError("未解析到历史净值数据，请检查基金代码")
     net = json.loads(m1.group(1))
     acc = json.loads(m2.group(1))
-    return net, acc
+    mn = PAT_NAME.search(text)
+    name = mn.group(1).strip() if mn and mn.group(1) else None
+    return net, acc, name
 
 # ========== 会话状态 ==========
 if "fund_map" not in st.session_state:
@@ -135,6 +138,8 @@ if "enabled_mas" not in st.session_state:
     st.session_state.enabled_mas = set()
 if "datazoom" not in st.session_state:
     st.session_state.datazoom = {"start": 0, "end": 100}
+if "sel_code" not in st.session_state:
+    st.session_state.sel_code = "110022" if "110022" in st.session_state.fund_map else next(iter(st.session_state.fund_map.keys()), "")
 
 # ========== 侧栏（控制区）==========
 with st.sidebar:
@@ -153,37 +158,37 @@ with st.sidebar:
                 st.error("配置为空或格式不符合要求")
             else:
                 st.session_state.fund_map = new_map
+                if st.session_state.sel_code not in st.session_state.fund_map:
+                    st.session_state.sel_code = next(iter(st.session_state.fund_map.keys()), "")
                 st.success(f"已加载 {len(new_map)} 只基金")
         except Exception as e:
             st.error(f"读取失败：{e}")
 
-    # ====== 基金选择：支持输入检索 + 下拉选择 ======
+    # ====== 输入基金代码：直接检索并抓取（不限制在映射表内） ======
+    st.markdown("##### 基金代码")
+    default_code = st.session_state.sel_code or ("110022" if "110022" in st.session_state.fund_map else next(iter(st.session_state.fund_map.keys()), ""))
+    inp_code = st.text_input("输入基金代码（6位）", value=default_code, max_chars=6)
+    inp_code = (inp_code or "").strip()
+    if re.fullmatch(r"\d{6}", inp_code):
+        st.session_state.sel_code = inp_code
+    else:
+        st.caption("请输入 6 位数字基金代码")
+
+    # ====== 下拉选择（可选） ======
+    st.markdown("##### 基金（可选下拉）")
     codes_sorted = sorted(st.session_state.fund_map.keys())
     code_label_map = {c: f"{c} · {st.session_state.fund_map[c]}" for c in codes_sorted}
+    options = [code_label_map[c] for c in codes_sorted] if codes_sorted else []
     label_code_map = {v: k for k, v in code_label_map.items()}
 
-    default_code = "110022" if "110022" in codes_sorted else (codes_sorted[0] if codes_sorted else "")
-    q = st.text_input("输入检索（代码/名称）", value=default_code)
-    q = (q or "").strip()
-
-    if q in st.session_state.fund_map:
-        sel_code = q
-        st.caption(f"已定位：{code_label_map.get(sel_code, sel_code)}")
-    else:
-        q_lower = q.lower()
-        filtered_codes = [
-            c for c in codes_sorted
-            if (q_lower in c.lower()) or (q_lower in st.session_state.fund_map[c].lower())
-        ]
-        if not filtered_codes:
-            filtered_codes = codes_sorted
-
-        options = [code_label_map[c] for c in filtered_codes]
-        default_label = code_label_map.get(default_code, options[0] if options else "")
-        idx = options.index(default_label) if (default_label in options) else 0
-
-        sel_label = st.selectbox("基金（下拉）", options=options, index=idx)
-        sel_code = label_code_map[sel_label]
+    if options:
+        cur = st.session_state.sel_code
+        default_label = code_label_map.get(cur, options[0])
+        idx = options.index(default_label) if default_label in options else 0
+        sel_label = st.selectbox("映射表", options=options, index=idx)
+        sel_code_dd = label_code_map[sel_label]
+        if sel_code_dd != st.session_state.sel_code:
+            st.session_state.sel_code = sel_code_dd
 
     # 区间
     range_key = st.radio(
@@ -217,12 +222,12 @@ with st.sidebar:
     st.divider()
     st.caption("小贴士：Streamlit 后端抓取数据，不受浏览器 CORS 限制。")
 
+sel_code = st.session_state.sel_code
+
 # ========== 主体内容 ==========
 left, right = st.columns([7, 3], gap="large")
 
 with left:
-    st.markdown(f"### {sel_code} · {st.session_state.fund_map.get(sel_code, '')}")
-
     col_a, col_b = st.columns([1, 6])
     with col_a:
         if st.button("今年"):
@@ -232,14 +237,20 @@ with left:
 
     status = st.empty()
     errbox = st.empty()
+
     try:
         status.info("加载中…")
-        net_raw, acc_raw = fetch_pingzhong(sel_code)
+        net_raw, acc_raw, fetched_name = fetch_pingzhong(sel_code)
+        if fetched_name and (sel_code not in st.session_state.fund_map or not st.session_state.fund_map.get(sel_code)):
+            st.session_state.fund_map[sel_code] = fetched_name
         status.success(f"数据就绪（单位净值 {len(net_raw)} 条，累计净值 {len(acc_raw)} 条）")
     except Exception as e:
         status.empty()
         errbox.error(str(e))
         st.stop()
+
+    fund_name = st.session_state.fund_map.get(sel_code, fetched_name or "")
+    st.markdown(f"### {sel_code} · {fund_name}")
 
     acc_map = {int(ts): float(v) for ts, v in acc_raw}
     rows_all = []
